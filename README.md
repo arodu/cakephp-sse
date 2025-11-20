@@ -90,3 +90,6 @@ eventSource.addEventListener('new_notification', (event) => {
 
 eventSource.onerror = (err) => console.error('Stream Error:', err);
 ```
+
+---
+[© 2025 arodu](https://github.com/arodu) 
