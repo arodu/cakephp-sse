@@ -30,38 +30,33 @@ class SseComponent extends Component
     }
 
     /**
-     * @param callable $dataCallback
      * @param string $watchCacheKey
      * @param array $options
      * @return Response
      */
-    public function stream(callable $dataCallback, string $watchCacheKey, array $options = []): Response
+    public function stream(string $watchCacheKey, array $options = []): Response
     {
-        $stream = $this->_buildStream($dataCallback, $watchCacheKey, $options);
+        $stream = $this->_buildStream($watchCacheKey, $options);
 
-        $response = $this->getController()->getResponse();
-        $response = $response
+        return $this->getController()->getResponse()
             ->withHeader('Content-Type', 'text/event-stream')
             ->withHeader('Cache-Control', 'no-cache')
             ->withHeader('Connection', 'keep-alive')
+            ->withHeader('X-Accel-Buffering', 'no')
             ->withBody($stream);
-
-        return $response;
     }
 
     /**
-     * @param callable $dataCallback
      * @param string $watchCacheKey
      * @param array $options
-     * @return CallbackStream
+     * @return \Cake\Http\CallbackStream
      */
-    protected function _buildStream(callable $dataCallback, string $watchCacheKey, array $options = []): CallbackStream
+    protected function _buildStream(string $watchCacheKey, array $options = []): CallbackStream
     {
         $config = Hash::merge($this->getConfig(), $options);
 
-        return new CallbackStream(function () use ($dataCallback, $watchCacheKey, $config) {
+        return new CallbackStream(function () use ($watchCacheKey, $config) {
             set_time_limit(0);
-            $lastSentTimestamp = null;
             $lastHeartbeat = time();
             session_write_close();
 
@@ -70,15 +65,22 @@ class SseComponent extends Component
                     break;
                 }
 
-                $currentTimestamp = Cache::read($watchCacheKey, $config['cacheConfig']);
-                if ($currentTimestamp > $lastSentTimestamp) {
-                    $data = $dataCallback();
-                    echo "event: " . $config['eventName'] . "\n";
-                    echo "data: " . json_encode($data) . "\n\n";
-                    $lastSentTimestamp = $currentTimestamp;
+                $queue = Cache::read($watchCacheKey, $config['cacheConfig']);
+                if (!empty($queue) && is_array($queue)) {
+
+                    foreach ($queue as $payload) {
+                        $evtName = is_array($payload) && isset($payload['event'])
+                            ? $payload['event']
+                            : $config['eventName'];
+
+                        echo "event: " . $evtName . "\n";
+                        echo "data: " . json_encode($payload) . "\n\n";
+                    }
+
+                    Cache::write($watchCacheKey, [], $config['cacheConfig']);
                     $lastHeartbeat = time();
-                } else if (time() - $lastHeartbeat > $config['heartbeat']) {
-                    echo ": \n\n";
+                } elseif (time() - $lastHeartbeat >= $config['heartbeat']) {
+                    echo ": heartbeat\n\n";
                     $lastHeartbeat = time();
                 }
 
@@ -87,7 +89,7 @@ class SseComponent extends Component
                 }
                 flush();
 
-                sleep($config['poll']);
+                sleep((int)$config['poll']);
             }
         });
     }
