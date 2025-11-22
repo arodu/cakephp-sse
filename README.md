@@ -1,6 +1,6 @@
 # CakePHP SSE Plugin 🚀
 
-> [!WARNING]  
+> [!WARNING]
 > This plugin is under development and not ready for production. Use at your own risk.
 
 A robust **Server-Sent Events (SSE)** plugin for CakePHP, designed with a **Signal + Payload** architecture.
@@ -38,21 +38,37 @@ By default, the plugin is set to **Zero-Config** mode using **File** for signals
 
 ### Basic Configuration (`app_local.php`)
 
+You can use string aliases for built-in strategies or pass fully qualified class names for custom implementations.
+
 ```php
 return [
     'Sse' => [
-        // Available engines: 'cache', 'database', 'redis'
+        // --- Payload Engines (Data Storage) ---
+        // Options: 'cache', 'database', 'redis'
+        // Or your custom class: \App\Sse\MyRabbitMqStrategy::class
         'payload_engine' => 'cache', 
         
-        // Available engines: 'file' (Recommended for most cases)
+        // --- Signal Engines (Wake-up Call) ---
+        // Options: 'file' (Recommended for most cases)
+        // Or your custom class: \App\Sse\MyRedisSignalStrategy::class
         'signal_engine' => 'file', 
 
-        // Extra options:
+        // --- Extra Options ---
         // 'cache_config' => 'default', // Cache config name if using 'cache' engine
         // 'redis_config' => 'sse_redis', // Redis config name if using 'redis' engine
     ],
 ];
 ```
+
+### 🧩 Custom Strategies (Extensibility)
+
+You can implement your own storage logic (e.g., using an external API, RabbitMQ, or specific log files) by implementing the interfaces:
+
+1.  Create your class implementing `Sse\Service\Payload\PayloadStrategyInterface`.
+2.  Register it in `app_local.php`:
+    ```php
+    'payload_engine' => \App\Service\Sse\MyCustomStrategy::class
+    ```
 
 ### ⚠️ Critical Requirement: Anti-Buffering
 
@@ -109,6 +125,7 @@ public function reports()
     $streamKey = 'USER_QUEUE_' . $userId;
 
     // (Optional) Hydrator: Transforms a "Seed" into a "Tree"
+    // This runs inside the loop, ensuring data is fresh at the moment of sending.
     $hydrator = function ($payload) {
         // If we receive just an ID, fetch fresh data from DB
         if (isset($payload['report_id'])) {
@@ -123,8 +140,8 @@ public function reports()
 
     // (Optional) Maintenance: Runs on every loop cycle
     $keepAlive = function () use ($userId) {
-        // Ex: Renew "Online" user session
-        Cache::write('online_' . $userId, true);
+        // Ex: Renew "Online" user session status in a short-term cache
+        Cache::write('online_' . $userId, true, 'short_term');
     };
 
     return $this->Sse->stream($streamKey, [
@@ -157,7 +174,7 @@ SseService::push('USER_QUEUE_1', [
 
 ```php
 // Sends only an ID. The Controller's 'beforeSend' will hydrate the data.
-// Ideal for complex objects or rapidly changing data.
+// Ideal for complex objects or rapidly changing data to avoid "Stale Data".
 SseService::push('USER_QUEUE_1', [
     'report_id' => 505
 ]);
@@ -175,7 +192,7 @@ const url = '/stream/reports.sse';
 const eventSource = new EventSource(url);
 
 // 1. Connection Established
-eventSource.onopen = () => console.log('✅ Stream connected');
+eventSource.onopen = () => console.log('Stream connected');
 
 // 2. Listen for specific events
 eventSource.addEventListener('toast', (e) => {
@@ -195,3 +212,6 @@ eventSource.onerror = (err) => {
     // EventSource reconnects automatically
 };
 ```
+
+---
+[© 2025 arodu](https://github.com/arodu) 
