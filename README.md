@@ -1,95 +1,197 @@
-# CakePHP SSE Plugin
+# CakePHP SSE Plugin 🚀
 
-A lightweight Server-Sent Events (SSE) implementation using efficient cache-based polling.
+> [!WARNING]  
+> This plugin is under development and not ready for production. Use at your own risk.
 
-## Installation
-You can install the plugin via Composer:
+A robust **Server-Sent Events (SSE)** plugin for CakePHP, designed with a **Signal + Payload** architecture.
 
-```bash
-composer require arodu/cakephp-sse
-```
+This plugin enables real-time data streaming optimized for **Shared Hosting environments** (where Redis or Node.js might not be available), while remaining fully scalable for high-performance setups. It effectively separates lightweight signaling (file-based) from robust data storage (Database/Cache/Redis).
 
-Then load the plugin in your `Application.php`:
+## 📦 Installation
+
+1.  **Load the Plugin:**
+
+    ```bash
+    bin/cake plugin load Sse
+    ```
+
+2.  **Create Signal Directory (For FileSignal):**
+    Ensure the temporary directory exists and is writable:
+
+    ```bash
+    mkdir -p tmp/sse_signals
+    chmod 777 tmp/sse_signals
+    ```
+
+3.  **(Optional) Migrations:**
+    If you plan to use `database` as the payload engine (recommended for production concurrency):
+
+    ```bash
+    bin/cake migrations migrate -p Sse
+    ```
+
+-----
+
+## ⚙️ Configuration
+
+By default, the plugin is set to **Zero-Config** mode using **File** for signals and **Cache** for payloads.
+
+### Basic Configuration (`app_local.php`)
 
 ```php
-public function bootstrap(): void
-{
-    parent::bootstrap();
-    $this->addPlugin('Sse');
+return [
+    'Sse' => [
+        // Available engines: 'cache', 'database', 'redis'
+        'payload_engine' => 'cache', 
+        
+        // Available engines: 'file' (Recommended for most cases)
+        'signal_engine' => 'file', 
+
+        // Extra options:
+        // 'cache_config' => 'default', // Cache config name if using 'cache' engine
+        // 'redis_config' => 'sse_redis', // Redis config name if using 'redis' engine
+    ],
+];
+```
+
+### ⚠️ Critical Requirement: Anti-Buffering
+
+For SSE to work, you **must disable buffering** in your web server for the `.sse` extension.
+
+**Nginx (`.ddev/nginx/sse.conf` or production):**
+
+```nginx
+location ~ \.sse$ {
+    fastcgi_buffering off;
+    gzip off;
+    add_header 'X-Accel-Buffering' 'no';
+    
+    # Standard CakePHP Routing
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $document_root/index.php;
+    fastcgi_pass unix:/run/php-fpm.sock; # Adjust socket path
 }
 ```
 
-or via the CakePHP console:
+**Apache (`.htaccess`):**
 
-```bash
-bin/cake plugin load Sse
+```apache
+<IfModule mod_deflate.c>
+    SetEnvIfNoCase Content-Type "text/event-stream" no-gzip
+</IfModule>
 ```
 
-## Usage
-
-### 1\. Controller Setup
-
-Load the component and create the stream endpoint.
+**CakePHP Routes (`config/routes.php`):**
 
 ```php
-// src/Controller/NotificationsController.php
-public function initialize(): void
-{
-    parent::initialize();
-    $this->loadComponent('Sse.Sse');
-}
+$routes->setExtensions(['sse']); // Critical!
 
-public function stream()
+$routes->scope('/stream', ['controller' => 'Stream'], function (RouteBuilder $routes) {
+    $routes->connect('/:action', ['_ext' => 'sse']);
+});
+```
+
+-----
+
+## 📡 Backend Usage
+
+### 1\. Creating the Stream (Controller)
+
+In your `StreamController`, use the `SseComponent` to open the channel. You can use **Data Hydration (`beforeSend`)** to convert lightweight IDs into full objects just before sending.
+
+```php
+// src/Controller/StreamController.php
+
+public function reports()
 {
     $this->autoRender = false;
     $userId = $this->Authentication->getIdentity()->get('id');
-    $cacheKey = 'user_notifications_' . $userId;
+    $streamKey = 'USER_QUEUE_' . $userId;
 
-    // Define what data to send when an update is detected
-    $callback = function () use ($userId) {
-        return $this->Notifications->find()->where(['user_id' => $userId, 'read' => false])->toArray();
+    // (Optional) Hydrator: Transforms a "Seed" into a "Tree"
+    $hydrator = function ($payload) {
+        // If we receive just an ID, fetch fresh data from DB
+        if (isset($payload['report_id'])) {
+            return [
+                'event' => 'report_ready',
+                'data' => $this->fetchTable('Reports')->get($payload['report_id']),
+                'timestamp' => time()
+            ];
+        }
+        return $payload; // Pass simple messages through
     };
 
-    return $this->Sse->stream($callback, $cacheKey, [
-        'eventName' => 'new_notification',
-        'poll' => 2,      // Check cache every 2 seconds
-        'heartbeat' => 15 // Keep-alive every 15 seconds
+    // (Optional) Maintenance: Runs on every loop cycle
+    $keepAlive = function () use ($userId) {
+        // Ex: Renew "Online" user session
+        Cache::write('online_' . $userId, true);
+    };
+
+    return $this->Sse->stream($streamKey, [
+        'poll' => 2,             // Seconds between checks
+        'eventName' => 'update', // Default event name
+        'beforeSend' => $hydrator,
+        'onLoop' => $keepAlive
     ]);
 }
 ```
 
-### 2\. Triggering Updates
+### 2\. Sending Data (Trigger)
 
-Use the `SseTrigger` to update the cache timestamp when data changes (e.g., in a Table `afterSave`).
+Use the static service from anywhere in your application (Controller, Table, Command, Job).
+
+**Example A: Full Push (Direct Payload)**
 
 ```php
-use Sse\Sse\SseTrigger;
+use Sse\Service\SseService;
 
-// In your Table or Business Logic
-public function afterSave(EventInterface $event, EntityInterface $entity)
-{
-    if ($entity->user_id) {
-        // This signals the SSE loop to run the callback
-        SseTrigger::push('user_notifications_' . $entity->user_id);
-    }
-}
+// Sends ready-to-use data. Fast, but serializes JSON.
+SseService::push('USER_QUEUE_1', [
+    'event' => 'toast',
+    'message' => 'Process completed successfully.',
+    'type' => 'success'
+]);
 ```
 
-### 3\. Frontend (JavaScript)
+**Example B: Lightweight Signal (Seed Pattern)**
 
-Consume the stream using the native `EventSource` API.
+```php
+// Sends only an ID. The Controller's 'beforeSend' will hydrate the data.
+// Ideal for complex objects or rapidly changing data.
+SseService::push('USER_QUEUE_1', [
+    'report_id' => 505
+]);
+```
+
+-----
+
+## 🖥️ Frontend Usage (JavaScript)
+
+Use the native `EventSource` API. No external libraries required.
 
 ```javascript
-const eventSource = new EventSource('/notifications/stream');
+// Note the .sse extension to trigger Nginx rules
+const url = '/stream/reports.sse';
+const eventSource = new EventSource(url);
 
-// Listen for the custom event name defined in the Controller
-eventSource.addEventListener('new_notification', (event) => {
-    const data = JSON.parse(event.data);
-    console.log('New Data:', data);
+// 1. Connection Established
+eventSource.onopen = () => console.log('✅ Stream connected');
+
+// 2. Listen for specific events
+eventSource.addEventListener('toast', (e) => {
+    const data = JSON.parse(e.data);
+    alert(data.message); // "Process completed..."
 });
 
-eventSource.onerror = (err) => console.error('Stream Error:', err);
-```
+eventSource.addEventListener('report_ready', (e) => {
+    const data = JSON.parse(e.data);
+    console.log('Report Received:', data.data);
+    // Update Vue/React store...
+});
 
----
-[© 2025 arodu](https://github.com/arodu) 
+// 3. Error Handling
+eventSource.onerror = (err) => {
+    console.error('Stream Error', err);
+    // EventSource reconnects automatically
+};
+```
