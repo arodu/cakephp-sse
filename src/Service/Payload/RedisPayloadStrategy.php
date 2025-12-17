@@ -25,7 +25,6 @@ class RedisPayloadStrategy implements PayloadStrategyInterface
      */
     protected function getConnection()
     {
-        // Obtenemos el driver y luego su conexión interna
         return Cache::pool($this->cacheConfig)?->driver()->getConnection();
     }
 
